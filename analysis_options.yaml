@@ -1,0 +1,82 @@
+# flutter-senior-review: a strict, explained lint set for Flutter apps.
+# Every rule name below was checked with `dart analyze` (Dart 3.13.7):
+# unknown or removed names make the analyzer report an error.
+#
+# Use: copy this file to the root of your Flutter project and run `flutter analyze`.
+
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  language:
+    strict-casts: true        # no silent dynamic -> T casts
+    strict-inference: true    # no inferred dynamic in declarations
+    strict-raw-types: true    # List means List<dynamic>; say what you mean
+  errors:
+    # Promote the bugs that crash apps or leak memory from hints to errors.
+    use_build_context_synchronously: error
+    unawaited_futures: warning
+    cancel_subscriptions: error
+    close_sinks: error
+    missing_required_param: error
+    missing_return: error
+
+linter:
+  rules:
+    # --- Widgets and build ---
+    - prefer_const_constructors              # const widgets are not rebuilt
+    - prefer_const_constructors_in_immutables
+    - prefer_const_literals_to_create_immutables
+    - prefer_const_declarations
+    - use_key_in_widget_constructors         # every public widget accepts a key
+    - sized_box_for_whitespace               # SizedBox, not Container, for gaps
+    - use_colored_box                        # ColoredBox is cheaper than Container(color:)
+    - use_decorated_box                      # same for decoration-only Containers
+    - avoid_unnecessary_containers
+    - sort_child_properties_last             # child/children last reads like the tree
+    - use_full_hex_values_for_flutter_colors
+    - no_logic_in_create_state
+
+    # --- State, lifecycle, async ---
+    - use_build_context_synchronously        # no BuildContext after await without mounted check
+    - unawaited_futures                      # a forgotten await hides errors
+    - discarded_futures                      # strict: wrap fire-and-forget calls in unawaited(...)
+    - cancel_subscriptions                   # StreamSubscription must be cancelled
+    - close_sinks                            # StreamController must be closed
+    - avoid_void_async                       # async functions return Future<void>
+    - only_throw_errors
+    - avoid_catches_without_on_clauses       # catch what you expect
+    - avoid_print                            # use a logger or debugPrint
+    - avoid_slow_async_io
+
+    # --- Null safety and types ---
+    - avoid_dynamic_calls
+    - avoid_returning_null_for_void
+    - unnecessary_null_checks
+    - unnecessary_nullable_for_final_variable_declarations
+    - null_check_on_nullable_type_parameter
+    - cast_nullable_to_non_nullable
+    - always_declare_return_types
+    - type_annotate_public_apis
+    - avoid_types_as_parameter_names
+    - prefer_final_fields
+    - prefer_final_locals
+    - prefer_final_in_for_each
+
+    # --- Dart 3 style ---
+    - use_super_parameters
+    - use_enums
+    - exhaustive_cases
+    - no_default_cases                       # let the compiler tell you about new enum/sealed cases
+    - prefer_if_null_operators
+    - prefer_null_aware_operators
+    - unnecessary_lambdas
+    - unnecessary_await_in_return
+    - unnecessary_breaks
+
+    # --- Readability ---
+    - directives_ordering
+    - prefer_relative_imports
+    - prefer_single_quotes
+    - unnecessary_parenthesis
+    - avoid_redundant_argument_values
+    - eol_at_end_of_file
