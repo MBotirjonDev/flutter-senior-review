@@ -127,8 +127,38 @@ high   lib/widget/dialogs/pin_dialog.dart:26  F11 TextEditingController _textCon
        fix: Call _textController.dispose() in dispose(), before super.dispose().
 ```
 
-Node 18+, no install. `--json` for machines, `--fail-on high|medium|low|none` for CI (default
-`high`). It skips `build/`, `test/` and generated files.
+Node 18+, no install. It skips `build/`, `test/` and generated files.
+
+| Flag | What it does |
+|---|---|
+| `--json` / `--sarif` | machine output; SARIF 2.1.0 for GitHub code scanning |
+| `--diff origin/main` | only findings on lines changed since that ref, for PR reviews |
+| `--diff-file pr.diff` | same, from a saved `git diff -U0` |
+| `--fail-on high\|medium\|low\|none` | exit code for CI (default `high`) |
+
+## In pull requests (GitHub Action)
+
+New in v0.2. Findings show up as annotations on the changed lines, and only on the changed
+lines, so an old codebase does not drown a small PR.
+
+```yaml
+# .github/workflows/flutter-review.yml
+on: pull_request
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: MBotirjonDev/flutter-senior-review@v0.2.0
+        with:
+          path: lib
+          fail-on: high
+```
+
+Inputs: `path`, `fail-on`, `diff-base` (default: the PR's base branch; empty checks everything)
+and `sarif` (a file path, for `github/codeql-action/upload-sarif`). A full example with the SARIF
+upload is in [examples/flutter-review.yml](examples/flutter-review.yml).
 
 ## The 40 rules
 
@@ -136,8 +166,8 @@ Full text with why, bad and good: [rules/RULES.md](rules/RULES.md). ✓ = the ch
 
 | Area | Rules |
 |---|---|
-| Widgets and build() | F01 widget classes, not helper methods ✓ · F02 const · F03 pure build() · F04 short build() ✓ · F05 keys in lists · F06 ListView.builder · F07 no Opacity/ClipRRect in hot paths · F08 SizedBox over Container · F09 MediaQuery.sizeOf ✓ · F10 LayoutBuilder for breakpoints |
-| State and lifecycle | F11 dispose everything ✓ · F12 mounted before setState ✓ · F13 no context across async gaps ✓ · F14 lift state only as far as needed · F15 safe async in initState · F16 didUpdateWidget · F17 inherited widgets in didChangeDependencies · F18 nothing in createState |
+| Widgets and build() | F01 widget classes, not helper methods ✓ · F02 const · F03 pure build() ✓ · F04 short build() ✓ · F05 keys in lists · F06 ListView.builder ✓ · F07 no Opacity/ClipRRect in hot paths · F08 SizedBox over Container · F09 MediaQuery.sizeOf ✓ · F10 LayoutBuilder for breakpoints |
+| State and lifecycle | F11 dispose everything ✓ · F12 mounted before setState ✓ · F13 no context across async gaps ✓ · F14 lift state only as far as needed · F15 safe async in initState ✓ · F16 didUpdateWidget · F17 inherited widgets in didChangeDependencies ✓ · F18 nothing in createState |
 | Null safety and types | F19 no `!` papering ✓ · F20 sealed classes + switch · F21 no default on sealed switches · F22 no dynamic · F23 final · F24 records |
 | Async | F25 await or unawaited · F26 catch specific errors · F27 cancel and close streams · F28 Future.wait for independent calls |
 | Theming and UI | F29 colors from the theme ✓ · F30 text from TextTheme · F31 text scaling · F32 48 dp targets · F33 Semantics and tooltips · F34 reduce motion |
@@ -155,14 +185,15 @@ hand against the source and is a real issue.
 |---|---:|---:|---:|---|
 | [flutter/samples: compass_app](https://github.com/flutter/samples/tree/main/compass_app) | 0 | 0 | 1 | none |
 | [localsend/localsend](https://github.com/localsend/localsend) | 4 | 4 | 22 | 3 undisposed `TextEditingController`s, `setState` after await in `web_share_page.dart` |
-| [gskinnerTeam/flutter-wonderous-app](https://github.com/gskinnerTeam/flutter-wonderous-app) | 6 | 56 | 13 | undisposed `PageController`, `ScrollController`s and `FocusNode`, `setState` after await |
+| [gskinnerTeam/flutter-wonderous-app](https://github.com/gskinnerTeam/flutter-wonderous-app) | 9 | 56 | 13 | undisposed `PageController`, `ScrollController`s and `FocusNode`, `setState` after await, a `PageController` rebuilt in every `build()`, async loads in `initState` with no error handling |
 | [flutter/samples: material_3_demo](https://github.com/flutter/samples/tree/main/material_3_demo) | 10 | 5 | 7 | `setState` and `ScaffoldMessenger.of(context)` after `await showDatePicker` |
 
 Most of wonderous's medium findings are F01 (47 helper methods returning widgets). Those are a
 style trade-off, not bugs. While testing I fixed five kinds of false positives the first version
 had: context used in the same statement as the await, `setState` from other state libraries,
 `context.pop()` inside callbacks, controllers owned by the parent widget, and synchronous
-`setState(() { if (...) })` blocks. Each one is now a test.
+`setState(() { if (...) })` blocks. Each one is now a test. v0.2 adds F03, F06, F15 and F17;
+on these four apps they found 3 new high issues, all in wonderous, and each was checked by hand.
 
 ## analysis_options.yaml
 
@@ -175,7 +206,7 @@ formatter.
 
 ## Honest limits
 
-- **The checker is regex-based, not the Dart analyzer.** It finds 9 of the 40 rules. The other 31
+- **The checker is regex-based, not the Dart analyzer.** It finds 13 of the 40 rules. The other 27
   need the agent (or you) to read the code. That is why `flutter-review` verifies findings before
   reporting them.
 - **`analysis_options.yaml` was verified by name, not run on a Flutter project here** (no Flutter

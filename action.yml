@@ -1,0 +1,58 @@
+name: flutter-senior-review
+description: Review Flutter code in pull requests for leaks, async gaps, rebuilds and theming. Zero dependencies.
+author: MBotirjonDev
+branding:
+  icon: check-circle
+  color: blue
+inputs:
+  path:
+    description: Folder(s) to check, space separated
+    default: lib
+  fail-on:
+    description: Fail the job on findings at or above this severity (high, medium, low, none)
+    default: high
+  diff-base:
+    description: Only report findings on lines changed since this git ref (for example origin/main). Empty checks everything. On pull requests the base branch is used automatically.
+    default: auto
+  sarif:
+    description: Path to write a SARIF file for GitHub code scanning. Empty skips it.
+    default: ''
+outputs:
+  findings:
+    description: Number of findings reported
+    value: ${{ steps.run.outputs.findings }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v5
+      with:
+        node-version: 20
+    - id: run
+      shell: bash
+      env:
+        FSR_PATH: ${{ inputs.path }}
+        FSR_FAIL_ON: ${{ inputs.fail-on }}
+        FSR_BASE: ${{ inputs.diff-base }}
+        FSR_SARIF: ${{ inputs.sarif }}
+        PR_BASE: ${{ github.base_ref }}
+      run: |
+        set -euo pipefail
+        CLI="$GITHUB_ACTION_PATH/skills/flutter-review/scripts/review.cjs"
+        DIFF=()
+        BASE="$FSR_BASE"
+        if [ "$BASE" = "auto" ]; then BASE="${PR_BASE:+origin/$PR_BASE}"; fi
+        if [ -n "$BASE" ]; then
+          git fetch --no-tags --depth=200 origin "${BASE#origin/}" >/dev/null 2>&1 || true
+          DIFF=(--diff "$BASE")
+        fi
+        read -r -a PATHS <<< "$FSR_PATH"
+        node "$CLI" "${PATHS[@]}" --json --fail-on none "${DIFF[@]}" > "$RUNNER_TEMP/fsr.json"
+        echo "findings=$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).length)' "$RUNNER_TEMP/fsr.json")" >> "$GITHUB_OUTPUT"
+        # Annotations on the PR diff.
+        node -e '
+          const f = JSON.parse(require("fs").readFileSync(process.argv[1]));
+          const lvl = { high: "error", medium: "warning", low: "notice" };
+          for (const x of f) console.log(`::${lvl[x.severity]} file=${x.file},line=${x.line},title=${x.rule}::${x.message}. Fix: ${x.fix}`);
+        ' "$RUNNER_TEMP/fsr.json"
+        if [ -n "$FSR_SARIF" ]; then node "$CLI" "${PATHS[@]}" --sarif --fail-on none "${DIFF[@]}" > "$FSR_SARIF"; fi
+        node "$CLI" "${PATHS[@]}" --fail-on "$FSR_FAIL_ON" "${DIFF[@]}"

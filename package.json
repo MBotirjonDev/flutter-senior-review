@@ -1,12 +1,12 @@
 {
   "name": "flutter-senior-review",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Agent skills that write, review and port Flutter like a senior engineer: 40 rules with bad and good snippets, a zero-dependency checker and a strict analysis_options.yaml.",
   "license": "MIT",
   "author": "Botirjon (https://github.com/MBotirjonDev)",
   "repository": { "type": "git", "url": "https://github.com/MBotirjonDev/flutter-senior-review.git" },
   "bin": { "flutter-senior-review": "skills/flutter-review/scripts/review.cjs" },
-  "files": ["skills/", "rules/", "analysis_options.yaml", "LICENSE", "README.md"],
+  "files": ["skills/", "rules/", "action.yml", "analysis_options.yaml", "LICENSE", "README.md"],
   "scripts": {
     "review": "node skills/flutter-review/scripts/review.cjs",
     "test": "node --test tests/review.test.cjs && node scripts/check-rules-sync.cjs",

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 // flutter-senior-review checker: finds the mechanical rule violations in Dart source.
-// Zero dependencies, Node 18+. Usage: node review.cjs <path...> [--json] [--fail-on high|medium|low|none]
+// Zero dependencies, Node 18+.
+// Usage: node review.cjs <path...> [--json | --sarif] [--diff <git-ref> | --diff-file <file>] [--fail-on high|medium|low|none]
 const fs = require('fs');
 const path = require('path');
 
@@ -51,6 +52,28 @@ function lineOf(code, idx) {
   let n = 1;
   for (let i = 0; i < idx; i++) if (code[i] === '\n') n++;
   return n;
+}
+
+// Blank out closure bodies and arrow bodies that are passed as arguments, keeping offsets.
+function stripClosures(body) {
+  const out = body.split('');
+  const blank = (a, b) => { for (let k = a; k < b; k++) if (out[k] !== '\n') out[k] = ' '; };
+  for (const m of body.matchAll(/\([^()]*\)\s*(?:async\s*)?(\{|=>)/g)) {
+    const before = body.slice(Math.max(0, m.index - 12), m.index);
+    if (/\b(if|for|while|switch|catch)\s*$/.test(before)) continue;
+    const start = m.index + m[0].length - m[1].length;
+    if (m[1] === '{') { blank(start, matchBrace(body, start) + 1); continue; }
+    // Arrow: blank up to the end of the enclosing argument.
+    let depth = 0, j = start + 2;
+    for (; j < body.length; j++) {
+      const c = body[j];
+      if ('([{'.includes(c)) depth++;
+      else if (')]}'.includes(c)) { if (depth === 0) break; depth--; }
+      else if ((c === ',' || c === ';') && depth === 0) break;
+    }
+    blank(start, j);
+  }
+  return out.join('');
 }
 
 function reviewSource(file, src) {
@@ -175,6 +198,43 @@ function reviewSource(file, src) {
     check(/(?:\.of\(\s*context\s*[,)]|\bcontext\s*\.\s*(?:go|push|pop|read|watch)\b|show\w*Dialog\s*\(\s*(?:context\s*:\s*)?context\b)/g, 'F13', 'BuildContext used after await without a mounted check', 'Add `if (!context.mounted) return;` after the await.');
   }
 
+  // F03: controllers or network calls created inside build().
+  for (const m of code.matchAll(/Widget\s+build\s*\(\s*BuildContext\s+\w+\s*\)\s*\{/g)) {
+    const open = m.index + m[0].length - 1;
+    const body = code.slice(open, matchBrace(code, open));
+    // Ignore code inside callbacks (onPressed: () { ... }, builder: (_) => ...): it does not run on every build.
+    const flat = stripClosures(body);
+    for (const u of flat.matchAll(/\b(AnimationController|TextEditingController|ScrollController|FocusNode|PageController|TabController|StreamController)\s*\(/g)) {
+      add('F03', 'high', open + u.index, `${u[1]} created in build()`, 'Create it in initState and dispose it in dispose().');
+    }
+    for (const u of flat.matchAll(/\b(?:http\.(?:get|post|put|delete)|dio\.(?:get|post|put|delete)|FirebaseFirestore\.instance\.collection\([^)]*\)\.get)\s*\(/g)) {
+      add('F03', 'high', open + u.index, 'network call in build()', 'Load data in initState, a FutureBuilder with a cached Future, or your state layer.');
+    }
+  }
+
+  // F06: ListView(children: ...) built from a collection.
+  for (const m of code.matchAll(/\bListView\s*\(/g)) {
+    const args = code.slice(m.index, m.index + 400);
+    const ch = /children\s*:\s*([^\n]*)/.exec(args);
+    if (ch && /(\.map\s*\(|\bfor\s*\(|List\.generate\s*\()/.test(ch[1] + args.slice(ch.index + ch[0].length, ch.index + ch[0].length + 120))) {
+      add('F06', 'medium', m.index, 'ListView(children:) built from a collection', 'Use ListView.builder (or ListView.separated) so items are built lazily.');
+    }
+  }
+
+  // F15 / F17: initState problems.
+  for (const m of code.matchAll(/void\s+initState\s*\(\s*\)\s*\{/g)) {
+    const open = m.index + m[0].length - 1;
+    const body = code.slice(open, matchBrace(code, open));
+    const flat = stripClosures(body);
+    for (const u of flat.matchAll(/\b(Theme|MediaQuery|DefaultTextStyle|Localizations|AppLocalizations|Directionality|ScaffoldMessenger)\.of\s*\(\s*context\b/g)) {
+      add('F17', 'high', open + u.index, `${u[1]}.of(context) in initState`, 'Read inherited widgets in didChangeDependencies or build.');
+    }
+    const asyncMethods = new Set([...code.matchAll(/Future<[^>]*>\s+(_?\w+)\s*\([^)]*\)\s*async\b/g)].map((a) => a[1]));
+    for (const u of flat.matchAll(/(^|[;{]\s*)(_?\w+)\s*\(\s*\)\s*;/gm)) {
+      if (asyncMethods.has(u[2])) add('F15', 'high', open + u.index + u[1].length, `${u[2]}() started in initState and its errors are dropped`, `Wrap it: unawaited(${u[2]}().catchError(...)) and show the error, or use a FutureBuilder.`);
+    }
+  }
+
   // F19: many null assertions in one file.
   const bangs = [...code.matchAll(/[\w)\]]!(?![=!])/g)];
   if (bangs.length > BANG_MAX) {
@@ -210,14 +270,87 @@ function review(paths) {
 }
 
 const RANK = { high: 3, medium: 2, low: 1, none: 99 };
+const VERSION = '0.2.0';
+
+// Parse `git diff -U0` output into { file: Set(changed new-side line numbers) }.
+function parseDiff(text) {
+  const changed = {};
+  let file = null;
+  for (const line of text.split('\n')) {
+    const f = /^\+\+\+ (?:b\/)?(.*)$/.exec(line);
+    if (f) { file = f[1] === '/dev/null' ? null : f[1].trim(); if (file) changed[file] = changed[file] || new Set(); continue; }
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
+    if (h && file) {
+      const start = Number(h[1]), count = h[2] === undefined ? 1 : Number(h[2]);
+      for (let n = start; n < start + count; n++) changed[file].add(n);
+    }
+  }
+  return changed;
+}
+
+// Keep findings on changed lines. File-level rules (F19, F29) and F04/F11, whose line is the
+// start of a block, are kept when any line of that file changed.
+const FILE_LEVEL = new Set(['F04', 'F11', 'F19', 'F29']);
+function filterByDiff(findings, changed, root = process.cwd()) {
+  const norm = (p) => path.relative(root, path.resolve(p)).split(path.sep).join('/');
+  return findings.filter((f) => {
+    const lines = changed[norm(f.file)];
+    if (!lines || !lines.size) return false;
+    return FILE_LEVEL.has(f.rule) || lines.has(f.line);
+  });
+}
+
+function toSarif(findings, root = process.cwd()) {
+  const level = { high: 'error', medium: 'warning', low: 'note' };
+  const ids = [...new Set(findings.map((f) => f.rule))].sort();
+  return {
+    $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
+    version: '2.1.0',
+    runs: [{
+      tool: { driver: {
+        name: 'flutter-senior-review',
+        version: VERSION,
+        informationUri: 'https://github.com/MBotirjonDev/flutter-senior-review',
+        rules: ids.map((id) => ({ id, helpUri: `https://github.com/MBotirjonDev/flutter-senior-review/blob/main/rules/RULES.md#${id.toLowerCase()}` })),
+      } },
+      results: findings.map((f) => ({
+        ruleId: f.rule,
+        level: level[f.severity],
+        message: { text: `${f.message}. Fix: ${f.fix}` },
+        locations: [{ physicalLocation: {
+          artifactLocation: { uri: path.relative(root, path.resolve(f.file)).split(path.sep).join('/') },
+          region: { startLine: f.line },
+        } }],
+      })),
+    }],
+  };
+}
+
+const USAGE = 'usage: review.cjs <path...> [--json | --sarif] [--diff <git-ref> | --diff-file <file>] [--fail-on high|medium|low|none]';
 
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const failOn = (args[args.indexOf('--fail-on') + 1] && args.includes('--fail-on')) ? args[args.indexOf('--fail-on') + 1] : 'high';
-  const paths = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--fail-on');
-  if (!paths.length) { console.error('usage: review.cjs <path...> [--json] [--fail-on high|medium|low|none]'); process.exit(2); }
-  const findings = review(paths).sort((a, b) => RANK[b.severity] - RANK[a.severity] || a.file.localeCompare(b.file) || a.line - b.line);
-  if (args.includes('--json')) console.log(JSON.stringify(findings, null, 2));
+  const opt = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+  if (args.includes('--version')) { console.log(VERSION); process.exit(0); }
+  const failOn = opt('--fail-on') || 'high';
+  const valued = new Set(['--fail-on', '--diff', '--diff-file']);
+  const paths = args.filter((a, i) => !a.startsWith('--') && !valued.has(args[i - 1]));
+  if (!paths.length || !RANK[failOn]) { console.error(USAGE); process.exit(2); }
+  let findings = review(paths).sort((a, b) => RANK[b.severity] - RANK[a.severity] || a.file.localeCompare(b.file) || a.line - b.line);
+  if (opt('--diff') || opt('--diff-file')) {
+    let text;
+    if (opt('--diff-file')) text = fs.readFileSync(opt('--diff-file'), 'utf8');
+    else {
+      const cp = require('child_process');
+      const top = cp.execFileSync('git', ['rev-parse', '--show-toplevel'], { encoding: 'utf8' }).trim();
+      text = cp.execFileSync('git', ['diff', '-U0', '--no-color', `${opt('--diff')}...HEAD`, '--', '*.dart'], { encoding: 'utf8', cwd: top, maxBuffer: 64 * 1024 * 1024 });
+      findings = filterByDiff(findings, parseDiff(text), top);
+      text = null;
+    }
+    if (text !== null) findings = filterByDiff(findings, parseDiff(text));
+  }
+  if (args.includes('--sarif')) console.log(JSON.stringify(toSarif(findings), null, 2));
+  else if (args.includes('--json')) console.log(JSON.stringify(findings, null, 2));
   else {
     for (const f of findings) console.log(`${f.severity.padEnd(6)} ${f.file}:${f.line}  ${f.rule} ${f.message}\n       fix: ${f.fix}`);
     const by = (s) => findings.filter((f) => f.severity === s).length;
@@ -226,4 +359,4 @@ if (require.main === module) {
   process.exitCode = findings.some((f) => RANK[f.severity] >= RANK[failOn]) ? 1 : 0;
 }
 
-module.exports = { reviewSource, review, mask };
+module.exports = { reviewSource, review, mask, parseDiff, filterByDiff, toSarif, VERSION };

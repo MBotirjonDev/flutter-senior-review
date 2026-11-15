@@ -78,3 +78,73 @@ test('F39 print, but not debugPrint or print in strings', () => {
   assert.ok(rules('void f() { print("x"); }').includes('F39'));
   assert.ok(!rules('void f() { debugPrint("x"); log("print(y)"); }').includes('F39'));
 });
+
+// ---------- v0.2 ----------
+const { parseDiff, filterByDiff, toSarif } = require('../scripts/review.cjs');
+
+test('F03 controllers and network calls in build(), not in callbacks', () => {
+  assert.ok(rules(state('  Widget build(BuildContext context) {\n    final c = TextEditingController();\n    return TextField(controller: c);\n  }')).includes('F03'));
+  assert.ok(rules('Widget build(BuildContext context) {\n  http.get(url);\n  return x;\n}').includes('F03'));
+  assert.ok(!rules('Widget build(BuildContext context) {\n  return ElevatedButton(onPressed: () {\n    http.post(url);\n  }, child: x);\n}').includes('F03'));
+  assert.ok(!rules('Widget build(BuildContext context) => ChangeNotifierProvider(create: (_) => FocusNode(), child: x);').includes('F03'));
+});
+
+test('F06 ListView(children:) from a collection, not small static lists', () => {
+  assert.ok(rules('final l = ListView(children: items.map((i) => Tile(i)).toList());').includes('F06'));
+  assert.ok(rules('final l = ListView(\n  children: [\n    for (final i in items) Tile(i),\n  ],\n);').includes('F06'));
+  assert.ok(!rules('final l = ListView(children: const [A(), B()]);').includes('F06'));
+  assert.ok(!rules('final l = ListView.builder(itemCount: n, itemBuilder: (_, i) => Tile(i));').includes('F06'));
+});
+
+test('F17 inherited widgets in initState', () => {
+  assert.ok(rules(state('  void initState() {\n    super.initState();\n    _dark = Theme.of(context).brightness == Brightness.dark;\n  }')).includes('F17'));
+  assert.ok(!rules(state('  void initState() {\n    super.initState();\n    WidgetsBinding.instance.addPostFrameCallback((_) {\n      _w = MediaQuery.of(context).size;\n    });\n  }')).includes('F17'));
+  assert.ok(!rules(state('  void didChangeDependencies() {\n    super.didChangeDependencies();\n    _dark = Theme.of(context).brightness == Brightness.dark;\n  }')).includes('F17'));
+});
+
+test('F15 async method started in initState without error handling', () => {
+  const load = '  Future<void> _load() async {\n    _d = await repo.get();\n  }\n';
+  assert.ok(rules(state(load + '  void initState() {\n    super.initState();\n    _load();\n  }')).includes('F15'));
+  assert.ok(!rules(state(load + '  void initState() {\n    super.initState();\n    unawaited(_load().catchError((Object e) {}));\n  }')).includes('F15'));
+  assert.ok(!rules(state('  void _init() {}\n  void initState() {\n    super.initState();\n    _init();\n  }')).includes('F15'));
+});
+
+test('parseDiff reads changed new-side lines', () => {
+  const d = parseDiff('diff --git a/lib/a.dart b/lib/a.dart\n--- a/lib/a.dart\n+++ b/lib/a.dart\n@@ -3,0 +4,2 @@\n+x\n+y\n@@ -10 +12 @@\n-z\n+w\n--- a/lib/old.dart\n+++ /dev/null\n@@ -1,2 +0,0 @@\n');
+  assert.deepStrictEqual([...d['lib/a.dart']], [4, 5, 12]);
+  assert.strictEqual(d['lib/old.dart'], undefined);
+});
+
+test('--diff keeps findings on changed lines and file-level rules of changed files', () => {
+  const fs = [
+    { rule: 'F39', file: 'lib/a.dart', line: 4 },
+    { rule: 'F39', file: 'lib/a.dart', line: 9 },
+    { rule: 'F19', file: 'lib/a.dart', line: 1 },
+    { rule: 'F39', file: 'lib/b.dart', line: 4 },
+  ];
+  const kept = filterByDiff(fs, { 'lib/a.dart': new Set([4, 5]) });
+  assert.deepStrictEqual(kept.map((f) => `${f.rule}:${f.line}`), ['F39:4', 'F19:1']);
+});
+
+test('SARIF output is valid 2.1.0 with levels and locations', () => {
+  const s = toSarif([{ rule: 'F12', severity: 'high', file: 'lib/a.dart', line: 7, message: 'm', fix: 'f' }, { rule: 'F39', severity: 'low', file: 'lib/a.dart', line: 2, message: 'p', fix: 'q' }]);
+  assert.strictEqual(s.version, '2.1.0');
+  const r = s.runs[0];
+  assert.deepStrictEqual(r.tool.driver.rules.map((x) => x.id), ['F12', 'F39']);
+  assert.deepStrictEqual(r.results.map((x) => x.level), ['error', 'note']);
+  assert.strictEqual(r.results[0].locations[0].physicalLocation.artifactLocation.uri, 'lib/a.dart');
+  assert.strictEqual(r.results[0].locations[0].physicalLocation.region.startLine, 7);
+});
+
+test('CLI --diff-file end to end', () => {
+  const os = require('os'); const p = require('path'); const nfs = require('fs'); const cp = require('child_process');
+  const dir = nfs.mkdtempSync(p.join(os.tmpdir(), 'fsr-'));
+  nfs.mkdirSync(p.join(dir, 'lib'));
+  nfs.writeFileSync(p.join(dir, 'lib', 'a.dart'), 'void a() {\n  print(1);\n  print(2);\n}\n');
+  nfs.writeFileSync(p.join(dir, 'd.diff'), '+++ b/lib/a.dart\n@@ -2,0 +3 @@\n+  print(2);\n');
+  const cli = p.join(__dirname, '..', 'skills', 'flutter-review', 'scripts', 'review.cjs');
+  const out = cp.spawnSync(process.execPath, [cli, 'lib', '--json', '--diff-file', 'd.diff', '--fail-on', 'low'], { cwd: dir, encoding: 'utf8' });
+  const f = JSON.parse(out.stdout);
+  assert.deepStrictEqual(f.map((x) => x.line), [3]);
+  assert.strictEqual(out.status, 1);
+});

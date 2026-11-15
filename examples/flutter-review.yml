@@ -1,0 +1,22 @@
+# Copy to .github/workflows/flutter-review.yml in your Flutter app.
+name: flutter-review
+on: pull_request
+permissions:
+  contents: read
+  security-events: write   # only needed for the SARIF upload
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: MBotirjonDev/flutter-senior-review@v0.2.0
+        with:
+          path: lib
+          fail-on: high
+          sarif: flutter-review.sarif
+      - uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: flutter-review.sarif

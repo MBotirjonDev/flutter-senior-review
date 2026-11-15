@@ -32,7 +32,7 @@ Padding(padding: EdgeInsets.all(16), child: Text('Hi'))
 const Padding(padding: EdgeInsets.all(16), child: Text('Hi'))
 ```
 
-### F03 Keep build() pure and cheap (high)
+### F03 Keep build() pure and cheap (high) [checked]
 Why: build runs on every frame that needs it. No I/O, no controllers, no subscriptions.
 ```dart
 // Bad
@@ -60,7 +60,7 @@ ListView(children: [for (final t in todos) TodoTile(todo: t)])
 ListView(children: [for (final t in todos) TodoTile(key: ValueKey(t.id), todo: t)])
 ```
 
-### F06 Use ListView.builder for long or unbounded lists (medium)
+### F06 Use ListView.builder for long or unbounded lists (medium) [checked]
 Why: `ListView(children: ...)` builds every child up front.
 ```dart
 // Bad
@@ -150,7 +150,7 @@ Why: state at the top of the tree rebuilds the whole tree. Keep it next to its r
 // Good: the checkbox row owns its bool
 ```
 
-### F15 Do not start async work in initState without handling errors (high)
+### F15 Do not start async work in initState without handling errors (high) [checked]
 Why: an exception from an unawaited Future in initState is silently lost.
 ```dart
 // Bad
@@ -173,7 +173,7 @@ void didUpdateWidget(covariant Counter old) {
 }
 ```
 
-### F17 Read inherited widgets in didChangeDependencies, not initState (high)
+### F17 Read inherited widgets in didChangeDependencies, not initState (high) [checked]
 Why: `Theme.of`/`MediaQuery.of` in initState throws or misses updates.
 ```dart
 // Good
